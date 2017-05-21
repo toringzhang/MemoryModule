@@ -1,7 +1,12 @@
 // dllmain.cpp : 定义 DLL 应用程序的入口点。
 #include "stdafx.h"
-
+#ifdef _WIN64
+#pragma comment(linker,"/INCLUDE:_tls_used")
+#else
 #pragma comment(linker,"/INCLUDE:__tls_used")
+#endif // _WIN64
+
+
 void NTAPI MY_TLS_CALLBACK(PVOID DllHandle, DWORD Reason, PVOID Reserved);
 
 
@@ -43,6 +48,13 @@ void NTAPI MY_TLS_CALLBACK(PVOID DllHandle, DWORD Reason, PVOID Reserved)
 	}
 }
 
+extern "C"
+#ifdef _WIN64
+#pragma const_seg(".CRT$XLX")
+const
+#else
 #pragma data_seg(".CRT$XLX")
+#endif
 PIMAGE_TLS_CALLBACK pTLS_CALLBACKs[] = { MY_TLS_CALLBACK,0 };
 #pragma data_seg()
+#pragma const_seg()
