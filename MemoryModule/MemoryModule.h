@@ -115,4 +115,18 @@ extern "C"
 
 	FARPROC MemoryGetProcAddress(HMEMORYMODULE Module, LPCSTR lpProcName);
 
+	HMEMORYRSRC MemoryFindResource(HMEMORYMODULE Module, LPCTSTR ResourceName, LPCTSTR Type);
+
+	HMEMORYRSRC MemoryFindResourceEx(HMEMORYMODULE Module, LPCTSTR ResourceName, LPCTSTR Type, WORD Language);
+
+	static PIMAGE_RESOURCE_DIRECTORY_ENTRY _MemorySearchResourceEntry(void * Root, PIMAGE_RESOURCE_DIRECTORY ResourcesDirectory, LPCTSTR Key);
+
+	DWORD MemorySizeofResource(HMEMORYMODULE Module, HMEMORYRSRC Resource);
+
+	LPVOID MemoryLoadResource(HMEMORYMODULE Module, HMEMORYRSRC Resource);
+
+	int MemoryLoadString(HMEMORYMODULE Module, UINT Id, LPTSTR Buffer, int MaxSize);
+
+	int MemoryLoadStringEx(HMEMORYMODULE Module, UINT Id, LPTSTR Buffer, int MaxSize, WORD Language);
+
 }

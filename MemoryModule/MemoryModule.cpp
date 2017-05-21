@@ -774,3 +774,277 @@ FARPROC MemoryGetProcAddress(HMEMORYMODULE Module, LPCSTR lpProcName)
 	// 将RVA变为VA
 	return (FARPROC)(LPVOID)(CodeBase + (*(DWORD *)(CodeBase + ExportDirectory->AddressOfFunctions + (dwIndex * 4))));
 }
+
+
+#define DEFAULT_LANGUAGE        MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL)
+HMEMORYRSRC MemoryFindResource(HMEMORYMODULE Module, LPCTSTR ResourceName, LPCTSTR Type)
+{
+	return MemoryFindResourceEx(Module, ResourceName, Type, DEFAULT_LANGUAGE);
+}
+
+HMEMORYRSRC MemoryFindResourceEx(HMEMORYMODULE Module, LPCTSTR ResourceName, LPCTSTR Type, WORD Language)
+{
+	unsigned char *CodeBase = ((PMEMORYMODULE)Module)->pCodeBase;
+	PIMAGE_DATA_DIRECTORY ResourceDirectory = GET_HEADER_DICTIONARY((PMEMORYMODULE)Module, IMAGE_DIRECTORY_ENTRY_RESOURCE);
+	PIMAGE_RESOURCE_DIRECTORY RootResources;
+	PIMAGE_RESOURCE_DIRECTORY NameResources;
+	PIMAGE_RESOURCE_DIRECTORY TypeResources;
+	PIMAGE_RESOURCE_DIRECTORY_ENTRY FoundType;
+	PIMAGE_RESOURCE_DIRECTORY_ENTRY FoundName;
+	PIMAGE_RESOURCE_DIRECTORY_ENTRY FoundLanguage;
+
+	if (ResourceDirectory->Size == 0)
+	{
+		//
+		SetLastError(ERROR_RESOURCE_DATA_NOT_FOUND);
+		return NULL;
+	}
+
+	if (Language == DEFAULT_LANGUAGE)
+	{
+		// 
+		Language = LANGIDFROMLCID(GetThreadLocale());
+	}
+
+	//资源表的三层结构
+	RootResources = (PIMAGE_RESOURCE_DIRECTORY)(CodeBase + ResourceDirectory->VirtualAddress);
+	FoundType = _MemorySearchResourceEntry(RootResources, RootResources, Type);
+	if (FoundType == NULL) 
+	{
+		SetLastError(ERROR_RESOURCE_TYPE_NOT_FOUND);
+		return NULL;
+	}
+
+	TypeResources = (PIMAGE_RESOURCE_DIRECTORY)(CodeBase + ResourceDirectory->VirtualAddress + (FoundType->OffsetToData & 0x7fffffff));
+	FoundName = _MemorySearchResourceEntry(RootResources, TypeResources, ResourceName);
+	if (FoundName == NULL) 
+	{
+		SetLastError(ERROR_RESOURCE_NAME_NOT_FOUND);
+		return NULL;
+	}
+
+	NameResources = (PIMAGE_RESOURCE_DIRECTORY)(CodeBase + ResourceDirectory->VirtualAddress + (FoundName->OffsetToData & 0x7fffffff));
+	FoundLanguage = _MemorySearchResourceEntry(RootResources, NameResources, (LPCTSTR)(uintptr_t)Language);
+	if (FoundLanguage == NULL) 
+	{
+		// requested language not found, use first available
+		if (NameResources->NumberOfIdEntries == 0) 
+		{
+			SetLastError(ERROR_RESOURCE_LANG_NOT_FOUND);
+			return NULL;
+		}
+
+		FoundLanguage = (PIMAGE_RESOURCE_DIRECTORY_ENTRY)(NameResources + 1);
+	}
+
+	return (CodeBase + ResourceDirectory->VirtualAddress + (FoundLanguage->OffsetToData & 0x7fffffff));
+}
+
+
+static PIMAGE_RESOURCE_DIRECTORY_ENTRY _MemorySearchResourceEntry(
+	void *Root,
+	PIMAGE_RESOURCE_DIRECTORY ResourcesDirectory,
+	LPCTSTR Key)
+{
+	PIMAGE_RESOURCE_DIRECTORY_ENTRY ResourceEntries = (PIMAGE_RESOURCE_DIRECTORY_ENTRY)(ResourcesDirectory + 1);
+	PIMAGE_RESOURCE_DIRECTORY_ENTRY Result = NULL;
+	DWORD Start;
+	DWORD End;
+	DWORD Middle;
+
+	if (!IS_INTRESOURCE(Key) && Key[0] == TEXT('#')) 
+	{
+		// ID是String
+		TCHAR *EndPos = NULL;
+		long int v1 = (WORD)_tcstol((TCHAR *)&Key[1], &EndPos, 10);
+		if (v1 <= 0xffff && lstrlen(EndPos) == 0)
+		{
+			Key = MAKEINTRESOURCE(v1);
+		}
+	}
+
+	// entries are stored as ordered list of named entries,
+	// followed by an ordered list of id entries - we can do
+	// a binary search to find faster...
+	if (IS_INTRESOURCE(Key))
+	{
+		WORD Check = (WORD)(uintptr_t)Key;
+		Start = ResourcesDirectory->NumberOfNamedEntries;
+		End = Start + ResourcesDirectory->NumberOfIdEntries;
+
+		while (End > Start) 
+		{
+			WORD EntryName;
+			Middle = (Start + End) >> 1;   //(Start+End)/2  位操作运算速度快
+			EntryName = (WORD)ResourceEntries[Middle].Name;
+			if (Check < EntryName) 
+			{
+				End = (End != Middle ? Middle : Middle - 1);
+			}
+			else if (Check > EntryName) 
+			{
+				Start = (Start != Middle ? Middle : Middle + 1);
+			}
+			else 
+			{
+				Result = &ResourceEntries[Middle];
+				break;
+			}
+		}
+	}
+	else 
+	{
+		LPCWSTR SearchKey;
+		size_t SearchKeyLen = _tcslen(Key);
+#if defined(UNICODE)
+		SearchKey = Key;
+#else
+		// Resource names are always stored using 16bit characters, need to
+		// convert string we search for.
+#define MAX_LOCAL_KEY_LENGTH 2048
+		// In most cases resource names are short, so optimize for that by
+		// using a pre-allocated array.
+		wchar_t _SearchKeySpace[MAX_LOCAL_KEY_LENGTH + 1];
+		LPWSTR _SearchKey;
+		if (SearchKeyLen > MAX_LOCAL_KEY_LENGTH) 
+		{
+			size_t _SearchKeySize = (SearchKeyLen + 1) * sizeof(wchar_t);
+			_SearchKey = (LPWSTR)malloc(_SearchKeySize);
+			if (_SearchKey == NULL) 
+			{
+				SetLastError(ERROR_OUTOFMEMORY);
+				return NULL;
+			}
+		}
+		else {
+			_SearchKey = &_SearchKeySpace[0];
+		}
+
+		mbstowcs(_SearchKey, Key, SearchKeyLen);
+		_SearchKey[SearchKeyLen] = 0;
+		SearchKey = _SearchKey;
+#endif
+		Start = 0;
+		End = ResourcesDirectory->NumberOfNamedEntries;
+		while (End > Start) 
+		{
+			int cmp;
+			PIMAGE_RESOURCE_DIR_STRING_U ResourceString;
+			Middle = (Start + End) >> 1;
+			ResourceString = (PIMAGE_RESOURCE_DIR_STRING_U)OffsetPointer(Root, ResourceEntries[Middle].Name & 0x7FFFFFFF);
+			cmp = _wcsnicmp(SearchKey, ResourceString->NameString, ResourceString->Length);
+			if (cmp == 0) 
+			{
+				// Handle partial match
+				if (SearchKeyLen > ResourceString->Length) 
+				{
+					cmp = 1;
+				}
+				else if (SearchKeyLen < ResourceString->Length) 
+				{
+					cmp = -1;
+				}
+			}
+			if (cmp < 0) 
+			{
+				End = (Middle != End ? Middle : Middle - 1);
+			}
+			else if (cmp > 0) 
+			{
+				Start = (Middle != Start ? Middle : Middle + 1);
+			}
+			else 
+			{
+				Result = &ResourceEntries[Middle];
+				break;
+			}
+		}
+#if !defined(UNICODE)
+		if (SearchKeyLen > MAX_LOCAL_KEY_LENGTH) 
+		{
+			free(_SearchKey);
+		}
+#undef MAX_LOCAL_KEY_LENGTH
+#endif
+	}
+
+	return Result;
+}
+
+
+DWORD MemorySizeofResource(HMEMORYMODULE Module, HMEMORYRSRC Resource)
+{
+	PIMAGE_RESOURCE_DATA_ENTRY ResourceEntry;
+	UNREFERENCED_PARAMETER(Module);
+	ResourceEntry = (PIMAGE_RESOURCE_DATA_ENTRY)Resource;
+	if (ResourceEntry == NULL) 
+	{
+		return 0;
+	}
+
+	return ResourceEntry->Size;
+}
+
+LPVOID MemoryLoadResource(HMEMORYMODULE Module, HMEMORYRSRC Resource)
+{
+	unsigned char *CodeBase = ((PMEMORYMODULE)Module)->pCodeBase;
+	PIMAGE_RESOURCE_DATA_ENTRY ResourceEntry = (PIMAGE_RESOURCE_DATA_ENTRY)Resource;
+	if (ResourceEntry == NULL) 
+	{
+		return NULL;
+	}
+
+	return CodeBase + ResourceEntry->OffsetToData;
+}
+
+
+int MemoryLoadString(HMEMORYMODULE Module, UINT Id, LPTSTR Buffer, int MaxSize)
+{
+	return MemoryLoadStringEx(Module, Id, Buffer, MaxSize, DEFAULT_LANGUAGE);
+}
+
+int MemoryLoadStringEx(HMEMORYMODULE Module, UINT Id, LPTSTR Buffer, int MaxSize, WORD Language)
+{
+	HMEMORYRSRC Resource;
+	PIMAGE_RESOURCE_DIR_STRING_U Data;
+	DWORD Size;
+	if (MaxSize == 0) 
+	{
+		return 0;
+	}
+
+	Resource = MemoryFindResourceEx(Module, MAKEINTRESOURCE((Id >> 4) + 1), RT_STRING, Language);
+	if (Resource == NULL) 
+	{
+		Buffer[0] = 0;
+		return 0;
+	}
+
+	Data = (PIMAGE_RESOURCE_DIR_STRING_U)MemoryLoadResource(Module, Resource);
+	Id = Id & 0x0f;
+	while (Id--) 
+	{
+		Data = (PIMAGE_RESOURCE_DIR_STRING_U)OffsetPointer(Data, (Data->Length + 1) * sizeof(WCHAR));
+	}
+	if (Data->Length == 0) 
+	{
+		SetLastError(ERROR_RESOURCE_NAME_NOT_FOUND);
+		Buffer[0] = 0;
+		return 0;
+	}
+
+	Size = Data->Length;
+	if (Size >= (DWORD)MaxSize) 
+	{
+		Size = MaxSize;
+	}
+	else {
+		Buffer[Size] = 0;
+	}
+#if defined(UNICODE)
+	wcsncpy(Buffer, Data->NameString, Size);
+#else
+	wcstombs(Buffer, Data->NameString, Size);
+#endif
+	return Size;
+}
