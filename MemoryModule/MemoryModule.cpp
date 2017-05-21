@@ -304,7 +304,7 @@ static BOOL BuildImportTable(PMEMORYMODULE Module)
 	return bOk;
 }
 
-//是否是最后一个节
+//更改内存页属性等
 static BOOL FinalizeSection(PMEMORYMODULE Module, PSECTIONFINALIZEDATA SectionData)
 {
 	DWORD dwProtect, dwOldProtect;
